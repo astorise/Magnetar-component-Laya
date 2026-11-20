@@ -4,9 +4,10 @@ Laya decision component for [Magnetar](https://github.com/astorise/Magnetar).
 
 ## Status
 
-The initial Rust library implements checkpoint temperature selection and
-post-processing of supplied decision-head logits into choice, score and noul
-outputs. Integration tests compare against independently calculated outputs
+The Rust library prepares typed question sequences using a caller-provided
+tokenizer and implements checkpoint temperature selection and post-processing
+of supplied decision-head logits into choice, score and noul outputs.
+Integration tests compare against independently calculated outputs
 using the published checkpoint configuration. These functions do not run the
 encoder or learned head and do not establish calibration of a deployment.
 Model loading, graph production, Component Model exports and inference are not

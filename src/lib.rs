@@ -17,6 +17,203 @@ pub enum QuestionType {
     Noul,
 }
 
+/// A choice and its optional explanatory criterion, in presentation order.
+#[derive(Clone, Copy, Debug)]
+pub struct ChoiceOption<'a> {
+    pub label: &'a str,
+    pub description: Option<&'a str>,
+}
+
+/// A typed question in the upstream inference format.
+#[derive(Clone, Debug)]
+pub enum Question<'a> {
+    Choice {
+        instructions: &'a str,
+        options: &'a [ChoiceOption<'a>],
+    },
+    Score {
+        instructions: &'a str,
+        levels: &'a [&'a str],
+    },
+    Noul {
+        instructions: &'a str,
+        when_false: Option<&'a str>,
+        when_true: Option<&'a str>,
+    },
+}
+
+impl Question<'_> {
+    fn render(&self) -> (QuestionType, &str, Vec<String>) {
+        match self {
+            Self::Choice {
+                instructions,
+                options,
+            } => (
+                QuestionType::Choice,
+                instructions,
+                options
+                    .iter()
+                    .map(|option| match option.description {
+                        Some(description) if !description.is_empty() => {
+                            format!("{}: {description}", option.label)
+                        }
+                        _ => option.label.to_string(),
+                    })
+                    .collect(),
+            ),
+            Self::Score {
+                instructions,
+                levels,
+            } => (
+                QuestionType::Score,
+                instructions,
+                levels
+                    .iter()
+                    .enumerate()
+                    .map(|(i, level)| format!("level {i}: {level}"))
+                    .collect(),
+            ),
+            Self::Noul {
+                instructions,
+                when_false,
+                when_true,
+            } => (
+                QuestionType::Noul,
+                instructions,
+                vec![
+                    format!(
+                        "false: {}",
+                        when_false
+                            .filter(|s| !s.is_empty())
+                            .unwrap_or("no, the statement does not hold")
+                    ),
+                    format!(
+                        "true: {}",
+                        when_true
+                            .filter(|s| !s.is_empty())
+                            .unwrap_or("yes, the statement holds")
+                    ),
+                ],
+            ),
+        }
+    }
+}
+
+/// Special-token IDs and the literal mask token of the selected tokenizer.
+#[derive(Clone, Copy, Debug)]
+pub struct SpecialTokens<'a> {
+    pub cls: u32,
+    pub sep: u32,
+    pub mask: u32,
+    pub mask_text: &'a str,
+}
+
+/// Token sequence and positions read by the learned decision head.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PreparedSequence {
+    pub input_ids: Vec<u32>,
+    pub marker_positions: Vec<usize>,
+    pub question_type: QuestionType,
+}
+
+/// Render and tokenize one question using Laya's pinned sequence layout.
+///
+/// `encode` must tokenize the text without automatically adding special
+/// tokens, using the checkpoint's own tokenizer. State is passed as text;
+/// callers must serialize non-string state before invoking this function.
+/// All options must retain a marker after truncation or the call fails.
+pub fn prepare_sequence<F, E>(
+    question: &Question<'_>,
+    state: &str,
+    special: SpecialTokens<'_>,
+    max_len: usize,
+    head_max_len: usize,
+    truncate_left: bool,
+    encode: F,
+) -> Result<PreparedSequence, DecisionError>
+where
+    F: Fn(&str) -> Result<Vec<u32>, E>,
+    E: fmt::Display,
+{
+    if special.mask_text.is_empty() {
+        return Err(DecisionError("mask token text must not be empty".into()));
+    }
+    if max_len == 0 {
+        return Err(DecisionError("max_len must be positive".into()));
+    }
+    let (question_type, instructions, options) = question.render();
+    if options.is_empty() {
+        return Err(DecisionError(
+            "a question must have at least one option".into(),
+        ));
+    }
+    let tokenize = |text: &str| {
+        encode(text).map_err(|error| DecisionError(format!("tokenization failed: {error}")))
+    };
+    let instructions = instructions.replace(special.mask_text, " ");
+    let mut head = tokenize(&format!(
+        "{} question: {instructions}",
+        question_type.name()
+    ))?;
+    let mut option_tokens = options
+        .iter()
+        .map(|option| {
+            let mut ids = vec![special.mask];
+            let option = option.replace(special.mask_text, " ");
+            ids.extend(tokenize(&format!(" {option}"))?.into_iter().take(48));
+            Ok(ids)
+        })
+        .collect::<Result<Vec<_>, DecisionError>>()?;
+    let mut option_size: usize = option_tokens.iter().map(Vec::len).sum();
+    let mut budget = head_max_len.saturating_sub(option_size);
+    if budget < 16 {
+        let per_option = (head_max_len.saturating_sub(16) / option_tokens.len()).max(4);
+        for ids in &mut option_tokens {
+            ids.truncate(per_option);
+        }
+        option_size = option_tokens.iter().map(Vec::len).sum();
+        budget = head_max_len.saturating_sub(option_size);
+    }
+    head.truncate(budget.max(8));
+    let mut input_ids = vec![special.cls];
+    input_ids.extend(head);
+    input_ids.push(special.sep);
+    let mut marker_positions = Vec::with_capacity(option_tokens.len());
+    for option in option_tokens {
+        marker_positions.push(input_ids.len());
+        input_ids.extend(option);
+    }
+    input_ids.push(special.sep);
+    let room = max_len.saturating_sub(input_ids.len().saturating_add(1));
+    let state_tokens = tokenize(&state.replace(special.mask_text, " "))?;
+    let state_slice = if truncate_left {
+        // Upstream Python uses `state[-room:]`: when room is zero, `-0`
+        // selects the whole state, then the complete sequence is truncated.
+        let start = if room == 0 {
+            0
+        } else {
+            state_tokens.len().saturating_sub(room)
+        };
+        &state_tokens[start..]
+    } else {
+        &state_tokens[..state_tokens.len().min(room)]
+    };
+    input_ids.extend_from_slice(state_slice);
+    input_ids.push(special.sep);
+    input_ids.truncate(max_len);
+    if marker_positions
+        .iter()
+        .any(|&position| position >= input_ids.len())
+    {
+        return Err(DecisionError("option markers do not fit in max_len".into()));
+    }
+    Ok(PreparedSequence {
+        input_ids,
+        marker_positions,
+        question_type,
+    })
+}
+
 impl QuestionType {
     fn index(self) -> usize {
         match self {
