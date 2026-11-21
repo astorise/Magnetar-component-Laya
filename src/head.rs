@@ -4,7 +4,7 @@
 //! embedding, pre-norm TransformerEncoder layers, marker scorer and action
 //! head. It does not load a checkpoint or execute the ModernBERT encoder.
 
-use crate::QuestionType;
+use crate::{Calibrator, Decision, DecisionError, QuestionType, softmax as decision_softmax};
 use std::{error::Error, fmt};
 
 const MAX_ELEMENTS: usize = 67_108_864;
@@ -56,6 +56,49 @@ pub struct DecisionHead {
 pub struct HeadOutput {
     pub option_logits: Vec<f32>,
     pub action_logits: Vec<f32>,
+}
+
+/// Typed result retaining raw option and action scores alongside probabilities.
+/// The first action is "act" in the pinned model; later actions follow the
+/// checkpoint configuration's action order. No action threshold is implied.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DecisionResult {
+    pub option_scores: Vec<f32>,
+    pub decision: Decision,
+    pub action_scores: Vec<f32>,
+    pub action_probabilities: Vec<f64>,
+}
+
+impl HeadOutput {
+    /// Apply the checkpoint's question-type temperature and action softmax.
+    /// Temperature adjustment alone does not establish statistical calibration.
+    pub fn decide(
+        &self,
+        calibrator: &Calibrator,
+        question_type: QuestionType,
+    ) -> Result<DecisionResult, DecisionError> {
+        let option_scores: Vec<_> = self
+            .option_logits
+            .iter()
+            .map(|&value| value as f64)
+            .collect();
+        let action_scores: Vec<_> = self
+            .action_logits
+            .iter()
+            .map(|&value| value as f64)
+            .collect();
+        if action_scores.len() < 2 {
+            return Err(DecisionError(
+                "the action head requires at least two scores".into(),
+            ));
+        }
+        Ok(DecisionResult {
+            option_scores: self.option_logits.clone(),
+            decision: calibrator.decide(question_type, &option_scores)?,
+            action_scores: self.action_logits.clone(),
+            action_probabilities: decision_softmax(&action_scores, 1.0)?,
+        })
+    }
 }
 
 /// A malformed tensor, invalid mask or non-finite intermediate.

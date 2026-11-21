@@ -117,17 +117,11 @@ fn learned_head_matches_pinned_pytorch_with_padding_and_multiple_heads() {
             .unwrap();
         close(&result.option_logits, &case.logits, "option logits");
         close(&result.action_logits, &case.action_logits, "action logits");
-        let decision = calibrator
-            .decide(
-                qtype,
-                &result
-                    .option_logits
-                    .iter()
-                    .map(|&value| value as f64)
-                    .collect::<Vec<_>>(),
-            )
-            .unwrap();
+        let decision = result.decide(&calibrator, qtype).unwrap();
+        assert_eq!(decision.option_scores, result.option_logits);
+        assert_eq!(decision.action_scores, result.action_logits);
         let probabilities = decision
+            .decision
             .probabilities
             .iter()
             .map(|&value| value as f32)
@@ -142,6 +136,11 @@ fn learned_head_matches_pinned_pytorch_with_padding_and_multiple_heads() {
             &[action as f32],
             &[case.action_probability],
             "action probability",
+        );
+        close(
+            &[decision.action_probabilities[0] as f32],
+            &[case.action_probability],
+            "typed action probability",
         );
     }
 }
@@ -187,6 +186,25 @@ fn learned_head_rejects_bad_shapes_masks_markers_and_weights() {
     assert!(
         overflow
             .forward(&input, 3, &[true; 3], &[0, 1], QuestionType::Choice)
+            .is_err()
+    );
+    let calibrator = Calibrator::from_config(b"{}").unwrap();
+    let missing_actions = magnetar_component_laya::head::HeadOutput {
+        option_logits: vec![0.0, 1.0],
+        action_logits: vec![0.0],
+    };
+    assert!(
+        missing_actions
+            .decide(&calibrator, QuestionType::Choice)
+            .is_err()
+    );
+    let non_finite_actions = magnetar_component_laya::head::HeadOutput {
+        option_logits: vec![0.0, 1.0],
+        action_logits: vec![0.0, f32::NAN],
+    };
+    assert!(
+        non_finite_actions
+            .decide(&calibrator, QuestionType::Choice)
             .is_err()
     );
 }

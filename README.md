@@ -7,7 +7,9 @@ Laya decision component for [Magnetar](https://github.com/astorise/Magnetar).
 The Rust library prepares typed question sequences using a caller-provided
 tokenizer, evaluates the learned decision head from supplied f32 encoder states
 and weights, and post-processes option logits into choice, score and noul
-outputs with the checkpoint's temperatures. The CPU reference includes the
+outputs with the checkpoint's temperatures. Its typed result retains the raw
+option/action scores and probabilities without imposing an action threshold.
+The CPU reference includes the
 type embedding, two-stage Transformer head, option scorer and action head.
 Synthetic padded and variable-option tests compare its raw scores and
 probabilities to the pinned upstream PyTorch implementation, including a
