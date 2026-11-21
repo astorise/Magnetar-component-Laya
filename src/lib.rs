@@ -1,13 +1,14 @@
-//! Post-processing for the Laya decision model.
+//! Input preparation, learned-head reference and post-processing for Laya.
 //!
-//! This implements the upstream temperature selection and conversion from
-//! decision-head logits to distributions. It does not run the encoder or
-//! decision head: callers must supply their actual logits.
+//! The optional CPU head reference consumes caller-supplied encoder states
+//! and learned weights. This library does not load or run the encoder.
 
 use serde::Deserialize;
 use std::collections::BTreeMap;
 use std::error::Error;
 use std::fmt;
+
+pub mod head;
 
 /// A question type supported by the Laya checkpoint.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
