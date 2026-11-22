@@ -33,3 +33,35 @@ using the published checkpoint's temperatures. No model weights are included.
 Regenerate using PyTorch 2.15 with
 `python tests/fixtures/generate_head_reference.py path/to/rl_common.py`; the
 generator checks its SHA-256 before running.
+
+`checkpoint-head-header.json` lists the 35 non-encoder head tensors in the
+same pinned revision's [`model.safetensors`](https://huggingface.co/convaiinnovations/laya/blob/fd4f9dbcf4fde222fd43174bdd4c3b08b789e4e1/model.safetensors).
+Every listed tensor is stored as F16. The 21,536-byte original JSON header
+has SHA-256 `3a42d8e7a96d5aa22c5bc9475d7ff092e32a832ae7c6973688f66f7a84048c04`.
+The full checkpoint also contains the encoder and an F32 temperature buffer.
+
+`real-head-reference.json` was generated with the actual F16 head weights,
+decoded to f32, and deterministic *synthetic* encoder outputs. It records
+choice and score cases with different marker counts and padding. The upstream
+`DecisionModel` head is executed directly in PyTorch. The standalone Rust
+f32 comparison had maximum absolute errors of `3.9e-6` for option
+logits and `0.0015` for action logits (whose magnitudes exceed 2,500 in
+these synthetic cases); option-probability error was below `1.8e-7`. This is
+not an end-to-end checkpoint or BF16 qualification.
+
+To reproduce, obtain the pinned `rl_common.py` and complete `model.safetensors`
+and run the following from this Component repository. The generator verifies
+the source, header and relevant weight bytes by SHA-256, writes decoded weights
+outside the repository, and creates the small reference JSON separately:
+
+```sh
+python tests/fixtures/generate_real_head_reference.py \
+  --source /path/to/rl_common.py --model /path/to/model.safetensors \
+  --out /tmp/laya-head-f32 --reference /tmp/laya-reference.json
+MAGNETAR_LAYA_HEAD_F32_DIR=/tmp/laya-head-f32 cargo test --release --locked \
+  --test head_integration decoded_checkpoint_head_matches_upstream_pytorch -- --ignored
+```
+
+The generator also accepts `--header`, `--start` and `--end` instead of
+`--model` for individually retrieved byte ranges. Model weights and decoded
+weight files are not checked into this repository.

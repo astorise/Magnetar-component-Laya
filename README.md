@@ -13,8 +13,13 @@ The CPU reference includes the
 type embedding, two-stage Transformer head, option scorer and action head.
 Synthetic padded and variable-option tests compare its raw scores and
 probabilities to the pinned upstream PyTorch implementation, including a
-multi-head case. This does not establish calibration of a deployment.
-Encoder execution, checkpoint loading, graph production and Component Model
+multi-head case. The head can also be constructed from decoded checkpoint
+tensors after checking their names, dimensions and finite values. Its expected
+tensor shapes match the 35 F16 head tensors in the pinned checkpoint header;
+an optional CPU test compares the real decoded head weights and synthetic
+encoder outputs with upstream PyTorch. This does not establish calibration of
+a deployment.
+Encoder execution, checkpoint decoding, graph production and Component Model
 exports remain unimplemented; Laya is not yet runnable in Magnetar.
 
 ## Work required

@@ -1,8 +1,12 @@
 use magnetar_component_laya::{
-    Calibrator, QuestionType, act_probability,
-    head::{DecisionHead, LayerNorm, Linear, TransformerLayer},
+    Answer, Calibrator, QuestionType, act_probability,
+    head::{
+        CheckpointTensor, DecisionHead, LayerNorm, Linear, TransformerLayer,
+        checkpoint_tensor_shapes,
+    },
 };
 use serde::Deserialize;
+use std::collections::BTreeMap;
 
 #[derive(Deserialize)]
 struct Case {
@@ -76,6 +80,183 @@ fn head(d: usize) -> DecisionHead {
         scorer_out: linear("scorer.3", d, 1),
         action_in: linear("act_head.0", d + 4, 256),
         action_out: linear("act_head.2", 256, 2),
+    }
+}
+
+fn checkpoint_tensors(hidden: usize) -> BTreeMap<String, CheckpointTensor> {
+    checkpoint_tensor_shapes(hidden, 2, 2)
+        .unwrap()
+        .into_iter()
+        .map(|(name, shape)| {
+            let values = pattern(&name, shape.iter().product());
+            (name, CheckpointTensor { shape, values })
+        })
+        .collect()
+}
+
+#[test]
+fn checkpoint_head_layout_matches_the_pinned_f16_header() {
+    #[derive(Deserialize)]
+    struct Header {
+        header_sha256: String,
+        tensors: BTreeMap<String, Descriptor>,
+    }
+    #[derive(Deserialize)]
+    struct Descriptor {
+        dtype: String,
+        shape: Vec<usize>,
+    }
+    let header: Header =
+        serde_json::from_str(include_str!("fixtures/checkpoint-head-header.json")).unwrap();
+    assert_eq!(
+        header.header_sha256,
+        "3a42d8e7a96d5aa22c5bc9475d7ff092e32a832ae7c6973688f66f7a84048c04"
+    );
+    assert!(header.tensors.values().all(|tensor| tensor.dtype == "F16"));
+    let actual = header
+        .tensors
+        .into_iter()
+        .map(|(name, tensor)| (name, tensor.shape))
+        .collect();
+    assert_eq!(checkpoint_tensor_shapes(1024, 2, 2).unwrap(), actual);
+}
+
+#[test]
+fn checkpoint_head_mapping_matches_pytorch_and_rejects_bad_tensors() {
+    let cases: Vec<Case> =
+        serde_json::from_str(include_str!("fixtures/head_reference.json")).unwrap();
+    let case = &cases[0];
+    let tensors = checkpoint_tensors(case.hidden);
+    let loaded = DecisionHead::from_checkpoint_tensors(case.hidden, 2, 2, tensors.clone()).unwrap();
+    let result = loaded
+        .forward(
+            &pattern("encoder_output", case.tokens * case.hidden),
+            case.tokens,
+            &case
+                .mask
+                .iter()
+                .map(|&value| value != 0)
+                .collect::<Vec<_>>(),
+            &case.markers,
+            QuestionType::Choice,
+        )
+        .unwrap();
+    close(&result.option_logits, &case.logits, "loaded option logits");
+    close(
+        &result.action_logits,
+        &case.action_logits,
+        "loaded action logits",
+    );
+
+    let mut missing = tensors.clone();
+    missing.remove("head.layers.0.self_attn.in_proj_weight");
+    assert!(DecisionHead::from_checkpoint_tensors(case.hidden, 2, 2, missing).is_err());
+    let mut malformed = tensors.clone();
+    malformed.get_mut("scorer.1.weight").unwrap().shape = vec![1, case.hidden * case.hidden];
+    assert!(DecisionHead::from_checkpoint_tensors(case.hidden, 2, 2, malformed).is_err());
+    let mut nonfinite = tensors;
+    nonfinite.get_mut("act_head.2.bias").unwrap().values[0] = f32::NAN;
+    assert!(DecisionHead::from_checkpoint_tensors(case.hidden, 2, 2, nonfinite).is_err());
+    assert!(checkpoint_tensor_shapes(usize::MAX, 2, 2).is_err());
+}
+
+#[test]
+#[ignore = "requires decoded weights from the pinned Laya checkpoint"]
+fn decoded_checkpoint_head_matches_upstream_pytorch() {
+    #[derive(Deserialize)]
+    struct Reference {
+        cases: Vec<RealCase>,
+    }
+    #[derive(Deserialize)]
+    struct RealCase {
+        mask: Vec<u8>,
+        markers: Vec<usize>,
+        qtype: usize,
+        logits: Vec<f32>,
+        action_logits: Vec<f32>,
+        probabilities: Vec<f32>,
+        action_probabilities: Vec<f32>,
+        answer: f64,
+    }
+    let path = std::env::var_os("MAGNETAR_LAYA_HEAD_F32_DIR")
+        .expect("set MAGNETAR_LAYA_HEAD_F32_DIR to the generated decoded weights");
+    let mut tensors = BTreeMap::new();
+    for (name, shape) in checkpoint_tensor_shapes(1024, 2, 2).unwrap() {
+        let bytes = std::fs::read(std::path::Path::new(&path).join(format!("{name}.f32"))).unwrap();
+        assert_eq!(bytes.len(), shape.iter().product::<usize>() * 4, "{name}");
+        let values = bytes
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|chunk| f32::from_le_bytes(*chunk))
+            .collect();
+        tensors.insert(name, CheckpointTensor { shape, values });
+    }
+    let model = DecisionHead::from_checkpoint_tensors(1024, 2, 2, tensors).unwrap();
+    let reference: Reference =
+        serde_json::from_str(include_str!("fixtures/real-head-reference.json")).unwrap();
+    let calibrator =
+        Calibrator::from_config(include_bytes!("fixtures/rl_agent_config.json")).unwrap();
+    for case in reference.cases {
+        let kind = match case.qtype {
+            0 => QuestionType::Choice,
+            1 => QuestionType::Score,
+            _ => panic!("unexpected question type"),
+        };
+        let result = model
+            .forward(
+                &pattern("encoder_output", 4 * 1024),
+                4,
+                &case
+                    .mask
+                    .iter()
+                    .map(|&value| value != 0)
+                    .collect::<Vec<_>>(),
+                &case.markers,
+                kind,
+            )
+            .unwrap();
+        let decision = result.decide(&calibrator, kind).unwrap();
+        match decision.decision.answer {
+            Answer::Choice(index) => assert_eq!(index as f64, case.answer),
+            Answer::Score(value) => assert!((value - case.answer).abs() < 1e-5),
+            Answer::Noul(_) => panic!("unexpected answer type"),
+        }
+        let probabilities = decision
+            .decision
+            .probabilities
+            .iter()
+            .map(|&v| v as f32)
+            .collect();
+        let action_probabilities = decision
+            .action_probabilities
+            .iter()
+            .map(|&v| v as f32)
+            .collect();
+        for (label, actual, expected) in [
+            ("option", result.option_logits, case.logits),
+            ("action", result.action_logits, case.action_logits),
+            ("option probability", probabilities, case.probabilities),
+            (
+                "action probability",
+                action_probabilities,
+                case.action_probabilities,
+            ),
+        ] {
+            assert_eq!(actual.len(), expected.len());
+            let max_error = actual
+                .iter()
+                .zip(&expected)
+                .map(|(actual, expected)| (actual - expected).abs())
+                .fold(0.0_f32, f32::max);
+            eprintln!("{label} maximum absolute error: {max_error}");
+            for (index, (actual, expected)) in actual.iter().zip(&expected).enumerate() {
+                assert!(
+                    (actual - expected).abs() <= 3e-4 + 1e-5 * expected.abs(),
+                    "{label}[{index}]: {actual} != {expected}"
+                );
+            }
+        }
     }
 }
 

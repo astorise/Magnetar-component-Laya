@@ -5,7 +5,7 @@
 //! head. It does not load a checkpoint or execute the ModernBERT encoder.
 
 use crate::{Calibrator, Decision, DecisionError, QuestionType, softmax as decision_softmax};
-use std::{error::Error, fmt};
+use std::{collections::BTreeMap, error::Error, fmt};
 
 const MAX_ELEMENTS: usize = 67_108_864;
 
@@ -49,6 +49,76 @@ pub struct DecisionHead {
     /// Action head is `[hidden + 4, 256, action_count]`.
     pub action_in: Linear,
     pub action_out: Linear,
+}
+
+/// A decoded checkpoint tensor. Dimensions retain the checkpoint's
+/// output-major layout; values have already been converted to f32 by the
+/// caller's checkpoint loader.
+#[derive(Clone, Debug)]
+pub struct CheckpointTensor {
+    pub shape: Vec<usize>,
+    pub values: Vec<f32>,
+}
+
+/// The checkpoint names and shapes needed by the decision head. Encoder
+/// weights and the separate temperature buffer are not part of this map.
+pub fn checkpoint_tensor_shapes(
+    hidden: usize,
+    layer_count: usize,
+    action_count: usize,
+) -> Result<BTreeMap<String, Vec<usize>>, HeadError> {
+    let heads = (hidden / 64).max(1);
+    if hidden == 0
+        || hidden > 4096
+        || !hidden.is_multiple_of(heads)
+        || layer_count > 16
+        || !(2..=16).contains(&action_count)
+    {
+        return Err(HeadError(
+            "invalid decision-head checkpoint geometry".into(),
+        ));
+    }
+    let expanded = product(4, hidden)?;
+    let qkv = product(3, hidden)?;
+    product(expanded, hidden)?;
+    product(qkv, hidden)?;
+    let mut shapes = BTreeMap::new();
+    shapes.insert("type_emb.weight".into(), vec![3, hidden]);
+    for index in 0..layer_count {
+        let prefix = format!("head.layers.{index}");
+        for norm in ["norm1", "norm2"] {
+            for part in ["weight", "bias"] {
+                shapes.insert(format!("{prefix}.{norm}.{part}"), vec![hidden]);
+            }
+        }
+        shapes.insert(
+            format!("{prefix}.self_attn.in_proj_weight"),
+            vec![qkv, hidden],
+        );
+        shapes.insert(format!("{prefix}.self_attn.in_proj_bias"), vec![qkv]);
+        for (name, input, output) in [
+            ("self_attn.out_proj", hidden, hidden),
+            ("linear1", hidden, expanded),
+            ("linear2", expanded, hidden),
+        ] {
+            shapes.insert(format!("{prefix}.{name}.weight"), vec![output, input]);
+            shapes.insert(format!("{prefix}.{name}.bias"), vec![output]);
+        }
+    }
+    for part in ["weight", "bias"] {
+        shapes.insert(format!("scorer.0.{part}"), vec![hidden]);
+    }
+    for (name, input, output) in [
+        ("scorer.1", hidden, hidden),
+        ("scorer.3", hidden, 1),
+        ("act_head.0", hidden + 4, 256),
+        ("act_head.2", 256, action_count),
+    ] {
+        product(input, output)?;
+        shapes.insert(format!("{name}.weight"), vec![output, input]);
+        shapes.insert(format!("{name}.bias"), vec![output]);
+    }
+    Ok(shapes)
 }
 
 /// Raw scores before the checkpoint's temperature and answer conversion.
@@ -213,6 +283,86 @@ fn softmax(values: &[f32]) -> Result<Vec<f32>, HeadError> {
 }
 
 impl DecisionHead {
+    /// Construct a CPU reference head from decoded named checkpoint tensors.
+    /// The caller is responsible for decoding the declared source dtype; this
+    /// method checks every required shape, size and value before execution.
+    /// Unrelated tensors, such as encoder weights, are ignored.
+    pub fn from_checkpoint_tensors(
+        hidden: usize,
+        layer_count: usize,
+        action_count: usize,
+        mut tensors: BTreeMap<String, CheckpointTensor>,
+    ) -> Result<Self, HeadError> {
+        let shapes = checkpoint_tensor_shapes(hidden, layer_count, action_count)?;
+        for (name, shape) in &shapes {
+            let tensor = tensors
+                .get(name)
+                .ok_or_else(|| HeadError(format!("missing decision-head tensor {name}")))?;
+            let elements = shape.iter().try_fold(1usize, |count, &dimension| {
+                count.checked_mul(dimension).filter(|&n| n <= MAX_ELEMENTS)
+            });
+            if tensor.shape != *shape
+                || elements != Some(tensor.values.len())
+                || !finite(&tensor.values)
+            {
+                return Err(HeadError(format!("invalid decision-head tensor {name}")));
+            }
+        }
+        let mut take = |name: &str| {
+            tensors
+                .remove(name)
+                .expect("validated tensor remains in the map")
+                .values
+        };
+        let type_embedding = take("type_emb.weight");
+        let mut layers = Vec::with_capacity(layer_count);
+        for index in 0..layer_count {
+            let prefix = format!("head.layers.{index}");
+            let mut norm = |name: &str| LayerNorm {
+                weight: take(&format!("{prefix}.{name}.weight")),
+                bias: take(&format!("{prefix}.{name}.bias")),
+            };
+            let norm1 = norm("norm1");
+            let norm2 = norm("norm2");
+            let qkv = Linear {
+                weight: take(&format!("{prefix}.self_attn.in_proj_weight")),
+                bias: take(&format!("{prefix}.self_attn.in_proj_bias")),
+            };
+            let mut linear = |name: &str| Linear {
+                weight: take(&format!("{prefix}.{name}.weight")),
+                bias: take(&format!("{prefix}.{name}.bias")),
+            };
+            layers.push(TransformerLayer {
+                norm1,
+                norm2,
+                qkv,
+                attention_output: linear("self_attn.out_proj"),
+                feed_forward_in: linear("linear1"),
+                feed_forward_out: linear("linear2"),
+            });
+        }
+        let scorer_norm = LayerNorm {
+            weight: take("scorer.0.weight"),
+            bias: take("scorer.0.bias"),
+        };
+        let mut linear = |name: &str| Linear {
+            weight: take(&format!("{name}.weight")),
+            bias: take(&format!("{name}.bias")),
+        };
+        let result = Self {
+            hidden,
+            type_embedding,
+            layers,
+            scorer_norm,
+            scorer_in: linear("scorer.1"),
+            scorer_out: linear("scorer.3"),
+            action_in: linear("act_head.0"),
+            action_out: linear("act_head.2"),
+        };
+        result.validate()?;
+        Ok(result)
+    }
+
     fn validate(&self) -> Result<usize, HeadError> {
         let d = self.hidden;
         let heads = (d / 64).max(1);
