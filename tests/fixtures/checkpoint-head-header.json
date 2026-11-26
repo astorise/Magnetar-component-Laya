@@ -1,0 +1,228 @@
+{
+  "header_sha256": "3a42d8e7a96d5aa22c5bc9475d7ff092e32a832ae7c6973688f66f7a84048c04",
+  "tensors": {
+    "act_head.0.bias": {
+      "dtype": "F16",
+      "shape": [
+        256
+      ]
+    },
+    "act_head.0.weight": {
+      "dtype": "F16",
+      "shape": [
+        256,
+        1028
+      ]
+    },
+    "act_head.2.bias": {
+      "dtype": "F16",
+      "shape": [
+        2
+      ]
+    },
+    "act_head.2.weight": {
+      "dtype": "F16",
+      "shape": [
+        2,
+        256
+      ]
+    },
+    "head.layers.0.linear1.bias": {
+      "dtype": "F16",
+      "shape": [
+        4096
+      ]
+    },
+    "head.layers.0.linear1.weight": {
+      "dtype": "F16",
+      "shape": [
+        4096,
+        1024
+      ]
+    },
+    "head.layers.0.linear2.bias": {
+      "dtype": "F16",
+      "shape": [
+        1024
+      ]
+    },
+    "head.layers.0.linear2.weight": {
+      "dtype": "F16",
+      "shape": [
+        1024,
+        4096
+      ]
+    },
+    "head.layers.0.norm1.bias": {
+      "dtype": "F16",
+      "shape": [
+        1024
+      ]
+    },
+    "head.layers.0.norm1.weight": {
+      "dtype": "F16",
+      "shape": [
+        1024
+      ]
+    },
+    "head.layers.0.norm2.bias": {
+      "dtype": "F16",
+      "shape": [
+        1024
+      ]
+    },
+    "head.layers.0.norm2.weight": {
+      "dtype": "F16",
+      "shape": [
+        1024
+      ]
+    },
+    "head.layers.0.self_attn.in_proj_bias": {
+      "dtype": "F16",
+      "shape": [
+        3072
+      ]
+    },
+    "head.layers.0.self_attn.in_proj_weight": {
+      "dtype": "F16",
+      "shape": [
+        3072,
+        1024
+      ]
+    },
+    "head.layers.0.self_attn.out_proj.bias": {
+      "dtype": "F16",
+      "shape": [
+        1024
+      ]
+    },
+    "head.layers.0.self_attn.out_proj.weight": {
+      "dtype": "F16",
+      "shape": [
+        1024,
+        1024
+      ]
+    },
+    "head.layers.1.linear1.bias": {
+      "dtype": "F16",
+      "shape": [
+        4096
+      ]
+    },
+    "head.layers.1.linear1.weight": {
+      "dtype": "F16",
+      "shape": [
+        4096,
+        1024
+      ]
+    },
+    "head.layers.1.linear2.bias": {
+      "dtype": "F16",
+      "shape": [
+        1024
+      ]
+    },
+    "head.layers.1.linear2.weight": {
+      "dtype": "F16",
+      "shape": [
+        1024,
+        4096
+      ]
+    },
+    "head.layers.1.norm1.bias": {
+      "dtype": "F16",
+      "shape": [
+        1024
+      ]
+    },
+    "head.layers.1.norm1.weight": {
+      "dtype": "F16",
+      "shape": [
+        1024
+      ]
+    },
+    "head.layers.1.norm2.bias": {
+      "dtype": "F16",
+      "shape": [
+        1024
+      ]
+    },
+    "head.layers.1.norm2.weight": {
+      "dtype": "F16",
+      "shape": [
+        1024
+      ]
+    },
+    "head.layers.1.self_attn.in_proj_bias": {
+      "dtype": "F16",
+      "shape": [
+        3072
+      ]
+    },
+    "head.layers.1.self_attn.in_proj_weight": {
+      "dtype": "F16",
+      "shape": [
+        3072,
+        1024
+      ]
+    },
+    "head.layers.1.self_attn.out_proj.bias": {
+      "dtype": "F16",
+      "shape": [
+        1024
+      ]
+    },
+    "head.layers.1.self_attn.out_proj.weight": {
+      "dtype": "F16",
+      "shape": [
+        1024,
+        1024
+      ]
+    },
+    "scorer.0.bias": {
+      "dtype": "F16",
+      "shape": [
+        1024
+      ]
+    },
+    "scorer.0.weight": {
+      "dtype": "F16",
+      "shape": [
+        1024
+      ]
+    },
+    "scorer.1.bias": {
+      "dtype": "F16",
+      "shape": [
+        1024
+      ]
+    },
+    "scorer.1.weight": {
+      "dtype": "F16",
+      "shape": [
+        1024,
+        1024
+      ]
+    },
+    "scorer.3.bias": {
+      "dtype": "F16",
+      "shape": [
+        1
+      ]
+    },
+    "scorer.3.weight": {
+      "dtype": "F16",
+      "shape": [
+        1,
+        1024
+      ]
+    },
+    "type_emb.weight": {
+      "dtype": "F16",
+      "shape": [
+        3,
+        1024
+      ]
+    }
+  }
+}

@@ -1,14 +1,32 @@
 # magnetar-component-laya
 
-Placeholder for Laya decision models in [Magnetar](https://github.com/astorise/Magnetar).
+Laya decision component for [Magnetar](https://github.com/astorise/Magnetar).
 
 ## Status
 
-This is a scaffold only. It has no model graph, loader, weights, inference implementation, Component Model exports or supported checkpoint. Creating this repository does not make the model runnable in Magnetar.
+The Rust library prepares typed question sequences using a caller-provided
+tokenizer, evaluates the learned decision head from supplied f32 encoder states
+and weights, and post-processes option logits into choice, score and noul
+outputs with the checkpoint's temperatures. Its typed result retains the raw
+option/action scores and probabilities without imposing an action threshold.
+The CPU reference includes the
+type embedding, two-stage Transformer head, option scorer and action head.
+Synthetic padded and variable-option tests compare its raw scores and
+probabilities to the pinned upstream PyTorch implementation, including a
+multi-head case. The head can also be constructed from decoded checkpoint
+tensors after checking their names, dimensions and finite values. Its expected
+tensor shapes match the 35 F16 head tensors in the pinned checkpoint header;
+an optional CPU test compares the real decoded head weights and synthetic
+encoder outputs with upstream PyTorch. This does not establish calibration of
+a deployment.
+Encoder execution, checkpoint decoding, graph production and Component Model
+exports remain unimplemented; Laya is not yet runnable in Magnetar.
 
 ## Work required
 
-A compatible ModernBERT or mmBERT encoder, the trained decision head, option scoring and structured decisions.
+A compatible ModernBERT or mmBERT encoder, loading the trained decision-head
+weights and a runtime decision interface remain necessary. Magnetar's missing
+encoder and decision contracts are tracked in [issue #214](https://github.com/astorise/Magnetar/issues/214).
 
 A real implementation must identify a specific checkpoint and its license, integrate the relevant Magnetar component and runtime contracts, and validate outputs against an independent reference. See the [upstream model or project](https://huggingface.co/convaiinnovations/laya). Model weights are not included.
 
